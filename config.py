@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 
 # PR Times認証情報
-PRTIMES_EMAIL = 'your_email@example.com'
-PRTIMES_PASSWORD = 'your_password'
+PRTIMES_EMAIL = 'natsuno.s@msgcorp.jp'
+PRTIMES_PASSWORD = '@VDzKSy6c7PvLVm'
 
 # Google Sheets設定
 GOOGLE_CREDENTIALS_PATH = '/mnt/c/Users/hyuga/Downloads/credentials.json'
-SPREADSHEET_ID = 'your_spreadsheet_id'
-SHEET_NAME = 'PR_Times_Data'
+SPREADSHEET_ID = '1FPODrP-8DBUijUJXaZCu01FYNqVOIkJK_ss7ZokxDno'
+SHEET_NAME = 'prtimes_sc2'
 
 # 検索設定
 DEFAULT_SEARCH_KEYWORD = 'サプリ'
