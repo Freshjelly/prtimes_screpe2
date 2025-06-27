@@ -652,9 +652,7 @@ def main(headless=True):
         df.to_csv('prtimes_corrected_data.csv', index=False, encoding='utf-8-sig')
         
         # Google Sheetsに書き込み
-        SPREADSHEET_ID_NEW = "1ABCdefGHiJKlmNOPqrsTUvwxyz12345"  # 実際のスプレッドシートIDに変更してください
-        SHEET_NAME_NEW = "Sheet1"
-        write_to_google_sheets(df, SPREADSHEET_ID_NEW, SHEET_NAME_NEW)
+        write_to_google_sheets(df, SPREADSHEET_ID, SHEET_NAME)
     else:
         logger.warning("結果が空のため、DataFrameの作成をスキップします")
     
@@ -668,6 +666,15 @@ def main(headless=True):
 
 def test_extract_info():
     """動作検証用テスト関数"""
+    # 設定をconfig.pyから読み込む
+    try:
+        import config
+        SPREADSHEET_ID_TEST = config.SPREADSHEET_ID
+        SHEET_NAME_TEST = config.SHEET_NAME
+    except ImportError:
+        SPREADSHEET_ID_TEST = "1FPODrP-8DBUijUJXaZCu01FYNqVOIkJK_ss7ZokxDno"
+        SHEET_NAME_TEST = "prtimes_sc2"
+    
     # テスト用記事URLリスト
     test_urls = [
         'https://prtimes.jp/main/html/rd/p/000001554.000006302.html',
@@ -697,10 +704,6 @@ def test_extract_info():
     if results:
         df = pd.DataFrame(results)
         print(f"\n=== DataFrame作成完了: {len(df)}件 ===")
-        
-        # Google Sheetsに書き込み（テスト用）
-        SPREADSHEET_ID_TEST = "1FPODrP-8DBUijUJXaZCu01FYNqVOIkJK_ss7ZokxDno"  # テスト用スプレッドシートID
-        SHEET_NAME_TEST = "prtimes_sc2"
         
         print("Google Sheetsへの書き込みを実行中...")
         write_to_google_sheets(df, SPREADSHEET_ID_TEST, SHEET_NAME_TEST)
