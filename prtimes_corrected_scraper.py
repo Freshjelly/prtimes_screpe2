@@ -12,13 +12,21 @@ from typing import List, Dict, Optional
 import csv
 import urllib.parse
 import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+import requests.utils
 
 # ログ設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class PRTimesCorrectedScraper:
-    def __init__(self, email: str, password: str, credentials_path: str):
+    def __init__(self, email: str, password: str, credentials_path: str, headless: bool = True):
         """
         PR Timesスクレイパーの修正版
         
@@ -26,10 +34,12 @@ class PRTimesCorrectedScraper:
             email: PR Timesログイン用メールアドレス
             password: PR Timesログイン用パスワード
             credentials_path: Google認証用JSONファイルのパス
+            headless: ヘッドレスモードで実行するか（デフォルト: True）
         """
         self.email = email
         self.password = password
         self.credentials_path = credentials_path
+        self.headless = headless
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -42,268 +52,144 @@ class PRTimesCorrectedScraper:
         })
         self.logged_in = False
     
-    def find_login_url(self) -> Optional[str]:
-        """
-        正確なログインURLを動的に探索
-        
-        Returns:
-            Optional[str]: 見つかったログインURL、見つからない場合はNone
-        """
-        logger.info("ログインURLを探索中...")
-        
-        # 複数のパターンでログインURLを探す（2025年6月更新版）
-        potential_urls = [
-            'https://prtimes.jp/main/html/medialogin',  # メディアユーザー向けログイン（優先）
-            'https://prtimes.jp/auth/login',  # 企業ユーザー向けログイン（2025年現在）
-            'https://prtimes.jp/main/html/sociallogin',  # 個人ユーザー向けログイン
-            # 以下は旧URLパターン（互換性のため残す）
-            'https://media.prtimes.jp/login',
-            'https://account.prtimes.jp/login',
-            'https://login.prtimes.jp/',
-            'https://prtimes.jp/main/action.php?run=html&page=login',
-            'https://prtimes.jp/main/action.php?run=html&page=corp_login',
-            'https://prtimes.jp/login',
-            'https://prtimes.jp/main/login'
-        ]
-        
-        for url in potential_urls:
-            try:
-                logger.debug(f"ログインURL候補をチェック中: {url}")
-                response = self.session.get(url, timeout=10)
-                logger.debug(f"  ステータスコード: {response.status_code}")
-                
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # ログインフォームがあるかチェック
-                    forms = soup.find_all('form')
-                    logger.debug(f"  検出されたフォーム数: {len(forms)}")
-                    
-                    for i, form in enumerate(forms):
-                        # より柔軟な入力フィールド検出
-                        has_email = (form.find('input', {'type': 'email'}) or 
-                                   form.find('input', {'name': re.compile('email', re.I)}) or
-                                   form.find('input', {'name': re.compile('mail', re.I)}) or
-                                   form.find('input', {'placeholder': re.compile('メール|email', re.I)}))
-                        has_password = form.find('input', {'type': 'password'})
-                        
-                        # ユーザー名フィールドもチェック
-                        has_username = (form.find('input', {'name': re.compile('user', re.I)}) or
-                                      form.find('input', {'name': re.compile('login', re.I)}) or
-                                      form.find('input', {'placeholder': re.compile('ユーザー|ID', re.I)}))
-                        
-                        logger.debug(f"  フォーム{i+1}: email={bool(has_email)}, password={bool(has_password)}, username={bool(has_username)}")
-                        
-                        # ログインフォームの条件を緩和
-                        if has_password and (has_email or has_username):
-                            logger.info(f"ログインフォームが見つかりました: {url}")
-                            logger.debug(f"  フォームのaction属性: {form.get('action', 'なし')}")
-                            return url
-                else:
-                    logger.debug(f"  アクセス失敗: HTTP {response.status_code}")
-                            
-            except Exception as e:
-                logger.debug(f"URL {url} のチェック中にエラー: {e}")
-                continue
-        
-        # トップページからログインリンクを探す
-        try:
-            logger.debug("トップページからログインリンクを探索中...")
-            response = self.session.get('https://prtimes.jp/')
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # より詳細なログインリンクパターンを探す
-            login_patterns = [
-                r'ログイン|login',  # 一般的なログイン
-                r'企業.*ログイン|corporate.*login',  # 企業ログイン
-                r'メディア.*ログイン|media.*login',  # メディアログイン
-                r'会員.*ログイン|member.*login',  # 会員ログイン
-                r'配信.*ログイン|distribution.*login'  # 配信ログイン
-            ]
-            
-            found_links = []
-            for pattern in login_patterns:
-                login_links = soup.find_all('a', string=re.compile(pattern, re.I))
-                for link in login_links:
-                    href = link.get('href', '')
-                    link_text = link.get_text(strip=True)
-                    if href:
-                        if href.startswith('/'):
-                            href = f'https://prtimes.jp{href}'
-                        elif not href.startswith('http'):
-                            href = f'https://prtimes.jp/{href}'
-                        
-                        found_links.append((href, link_text))
-                        logger.debug(f"  発見されたリンク: '{link_text}' -> {href}")
-            
-            # 発見されたリンクをチェック
-            for href, link_text in found_links:
-                try:
-                    logger.debug(f"リンクをチェック中: {href}")
-                    test_response = self.session.get(href, timeout=10)
-                    if test_response.status_code == 200:
-                        test_soup = BeautifulSoup(test_response.text, 'html.parser')
-                        if test_soup.find('input', {'type': 'password'}):
-                            logger.info(f"ログインフォームが見つかりました: {href} ('{link_text}')")
-                            return href
-                except Exception as link_error:
-                    logger.debug(f"  リンクチェック中にエラー: {link_error}")
-                    continue
-                        
-        except Exception as e:
-            logger.debug(f"トップページの探索中にエラー: {e}")
-        
-        return None
     
-    def extract_csrf_token(self, soup: BeautifulSoup) -> Dict[str, str]:
-        """
-        HTMLからCSRFトークンを抽出
-        
-        Args:
-            soup: BeautifulSoupオブジェクト
-            
-        Returns:
-            Dict[str, str]: CSRFトークンのフィールド名と値
-        """
-        csrf_data = {}
-        
-        # 複数のパターンでCSRFトークンを探す
-        csrf_patterns = [
-            # input type="hidden"
-            ('input', {'type': 'hidden', 'name': re.compile(r'csrf|token|_token', re.I)}),
-            # meta tag
-            ('meta', {'name': re.compile(r'csrf-token|_token', re.I)}),
-            # input name with csrf/token
-            ('input', {'name': re.compile(r'csrf|token|authenticity', re.I)})
-        ]
-        
-        for tag_name, attrs in csrf_patterns:
-            elements = soup.find_all(tag_name, attrs)
-            for elem in elements:
-                if tag_name == 'meta':
-                    name = elem.get('name', '')
-                    value = elem.get('content', '')
-                    if value:
-                        csrf_data[name] = value
-                        logger.info(f"CSRFトークン発見 (meta): {name}")
-                else:
-                    name = elem.get('name', '')
-                    value = elem.get('value', '')
-                    if name and value:
-                        csrf_data[name] = value
-                        logger.info(f"CSRFトークン発見 (input): {name}")
-        
-        return csrf_data
     
     def login(self) -> bool:
         """
-        PR Timesにログイン（修正版）
+        PR TimesにSeleniumを使ってログイン
         
         Returns:
             bool: ログイン成功時True、失敗時False
         """
+        driver = None
         try:
-            # 1. ログインURLを探索
-            login_url = self.find_login_url()
-            if not login_url:
-                logger.error("ログインURLが見つかりませんでした")
-                # フォールバック: 検索機能のみで動作
-                logger.info("ログインなしでスクレイピングを継続します")
-                self.logged_in = False
-                return True  # 検索は可能なのでTrueを返す
+            # Chrome オプション設定
+            chrome_options = Options()
+            if self.headless:
+                chrome_options.add_argument('--headless')
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--disable-software-rasterizer')
+            chrome_options.add_argument('--remote-debugging-port=9222')
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # 2. ログインページにアクセスしてCSRFトークンを取得
-            logger.info(f"ログインページにアクセス: {login_url}")
-            response = self.session.get(login_url)
-            response.encoding = 'utf-8'
+            # ChromeDriver 自動管理
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver.implicitly_wait(10)
             
-            if response.status_code != 200:
-                logger.error(f"ログインページへのアクセスに失敗: {response.status_code}")
+            # メディアユーザーログインURLにアクセス
+            login_url = 'https://prtimes.jp/main/html/medialogin'
+            logger.info(f"Seleniumでログインページにアクセス: {login_url}")
+            driver.get(login_url)
+            
+            # ページ読み込み待機
+            wait = WebDriverWait(driver, 20)
+            
+            # メールアドレス入力フィールドを探す
+            email_field = wait.until(
+                EC.presence_of_element_located((By.NAME, "mail"))
+            )
+            email_field.clear()
+            email_field.send_keys(self.email)
+            logger.info("メールアドレスを入力しました")
+            
+            # パスワード入力フィールドを探す
+            password_field = driver.find_element(By.NAME, "pass")
+            password_field.clear()
+            password_field.send_keys(self.password)
+            logger.info("パスワードを入力しました")
+            
+            # ログインボタンを探してクリック
+            # 複数のセレクタを試す
+            login_button = None
+            button_selectors = [
+                (By.XPATH, "//button[contains(text(), 'ログイン')]"),
+                (By.XPATH, "//input[@type='submit' and (@value='ログイン' or @value='Login')]"),
+                (By.XPATH, "//button[@type='submit']"),
+                (By.CSS_SELECTOR, "button[type='submit']"),
+                (By.CSS_SELECTOR, "input[type='submit']")
+            ]
+            
+            for selector_type, selector_value in button_selectors:
+                try:
+                    login_button = driver.find_element(selector_type, selector_value)
+                    if login_button:
+                        break
+                except:
+                    continue
+            
+            if not login_button:
+                logger.error("ログインボタンが見つかりませんでした")
                 return False
             
-            soup = BeautifulSoup(response.text, 'html.parser')
+            # スクリーンショット（デバッグ用）
+            if not self.headless:
+                driver.save_screenshot("before_login.png")
             
-            # 3. ログインフォームを特定
-            login_form = None
-            forms = soup.find_all('form')
+            login_button.click()
+            logger.info("ログインボタンをクリックしました")
             
-            for form in forms:
-                # メディアログインの場合は 'mail' フィールドを探す
-                has_email = (form.find('input', {'type': 'email'}) or 
-                           form.find('input', {'name': re.compile('email|mail', re.I)}) or
-                           form.find('input', {'type': 'text', 'name': re.compile('mail', re.I)}))
-                has_password = form.find('input', {'type': 'password'}) or form.find('input', {'name': 'pass'})
-                
-                if has_email and has_password:
-                    login_form = form
-                    break
+            # ログイン処理の待機（ページ遷移またはエラーメッセージ）
+            time.sleep(3)
             
-            if not login_form:
-                logger.error("ログインフォームが見つかりませんでした")
-                return False
-            
-            # 4. CSRFトークンを抽出
-            csrf_data = self.extract_csrf_token(soup)
-            
-            # 5. フォームアクションURLを決定
-            action = login_form.get('action', '')
-            if action:
-                if action.startswith('/'):
-                    action_url = f'https://prtimes.jp{action}'
-                elif not action.startswith('http'):
-                    action_url = f'{login_url.rsplit("/", 1)[0]}/{action}'
-                else:
-                    action_url = action
-            else:
-                action_url = login_url
-            
-            # 6. ログインデータを準備
-            # メディアユーザーログインの場合、フィールド名が異なる
-            if 'medialogin' in login_url:
-                login_data = {
-                    'mail': self.email,  # メディアログインは 'mail' フィールド
-                    'pass': self.password  # メディアログインは 'pass' フィールド
-                }
-            else:
-                login_data = {
-                    'email': self.email,
-                    'password': self.password
-                }
-            
-            # CSRFトークンを追加
-            login_data.update(csrf_data)
-            
-            # 隠しフィールドも追加
-            hidden_inputs = login_form.find_all('input', {'type': 'hidden'})
-            for hidden in hidden_inputs:
-                name = hidden.get('name', '')
-                value = hidden.get('value', '')
-                if name and name not in login_data:
-                    login_data[name] = value
-            
-            logger.info(f"ログイン送信先: {action_url}")
-            logger.info(f"送信データ: {[k for k in login_data.keys() if k != 'password']}")
-            
-            # 7. ログインPOST
-            headers = {
-                'Referer': login_url,
-                'Content-Type': 'application/x-www-form-urlencoded'
-            }
-            
-            response = self.session.post(action_url, data=login_data, headers=headers, allow_redirects=True)
-            
-            # 8. ログイン成功の確認
-            success_indicators = ['logout', 'ログアウト', 'mypage', 'マイページ', 'dashboard', 'ダッシュボード']
-            failure_indicators = ['error', 'エラー', 'invalid', '無効', 'incorrect', '間違い']
-            
-            response_text = response.text.lower()
+            # ログイン成功の確認
+            current_url = driver.current_url
+            page_source = driver.page_source.lower()
             
             # 成功判定
-            if any(indicator in response_text for indicator in success_indicators):
+            success_indicators = ['logout', 'ログアウト', 'mypage', 'マイページ', 'dashboard', 'ダッシュボード']
+            failure_indicators = ['error', 'エラー', 'invalid', '無効', 'incorrect', '間違い', 'ログインできませんでした']
+            
+            login_success = False
+            if any(indicator in page_source for indicator in success_indicators):
                 logger.info("ログインに成功しました")
+                login_success = True
+            elif any(indicator in page_source for indicator in failure_indicators):
+                logger.error("ログインに失敗しました（認証エラー）")
+                if not self.headless:
+                    driver.save_screenshot("login_error.png")
+                return False
+            elif current_url != login_url:
+                # URLが変わっていればログイン成功の可能性が高い
+                logger.info(f"ログイン後のURL: {current_url}")
+                login_success = True
+            else:
+                logger.warning("ログイン結果の判定ができませんでした")
+                if not self.headless:
+                    driver.save_screenshot("login_unknown.png")
+            
+            if login_success:
+                # Cookieを取得してrequests.Sessionにコピー
+                logger.info("CookieをSeleniumからrequestsにコピー中...")
+                selenium_cookies = driver.get_cookies()
+                
+                for cookie in selenium_cookies:
+                    # requests用のCookie形式に変換
+                    cookie_obj = {
+                        'name': cookie['name'],
+                        'value': cookie['value'],
+                        'domain': cookie.get('domain', ''),
+                        'path': cookie.get('path', '/'),
+                        'secure': cookie.get('secure', False),
+                        'expires': cookie.get('expiry', None)
+                    }
+                    
+                    # requestsのセッションにCookieを追加
+                    self.session.cookies.set(
+                        cookie_obj['name'],
+                        cookie_obj['value'],
+                        domain=cookie_obj['domain'],
+                        path=cookie_obj['path'],
+                        secure=cookie_obj['secure']
+                    )
+                
+                logger.info(f"{len(selenium_cookies)}個のCookieをコピーしました")
                 self.logged_in = True
                 
-                # 9. マイページ等でログイン確認
+                # ログイン確認のためマイページにアクセス
                 mypage_urls = [
                     'https://prtimes.jp/mypage',
                     'https://prtimes.jp/main/mypage',
@@ -321,27 +207,17 @@ class PRTimesCorrectedScraper:
                 
                 return True
             
-            # 失敗判定
-            elif any(indicator in response_text for indicator in failure_indicators):
-                logger.error("ログインに失敗しました（認証エラー）")
-                return False
-            
-            # 判定できない場合
-            else:
-                logger.warning("ログイン結果の判定ができませんでした")
-                logger.info(f"レスポンスURL: {response.url}")
-                logger.info(f"ステータスコード: {response.status_code}")
-                
-                # レスポンスを保存
-                with open('login_response.html', 'w', encoding='utf-8') as f:
-                    f.write(response.text)
-                logger.info("レスポンスを login_response.html に保存しました")
-                
-                return False
+            return False
                 
         except Exception as e:
-            logger.error(f"ログイン中にエラーが発生しました: {e}")
+            logger.error(f"Seleniumログイン中にエラーが発生しました: {e}")
+            if not self.headless and driver:
+                driver.save_screenshot("login_exception.png")
             return False
+        finally:
+            if driver:
+                driver.quit()
+                logger.info("Seleniumドライバーを終了しました")
     
     def search_articles(self, keyword: str, max_articles: int = 50) -> List[str]:
         """
@@ -715,7 +591,7 @@ def write_to_google_sheets(dataframe: pd.DataFrame, spreadsheet_id: str, sheet_n
     except Exception as e:
         logger.error(f"Google Sheetsへの書き込み中にエラーが発生しました: {e}")
 
-def main():
+def main(headless=True):
     # 設定をconfig.pyから読み込む
     try:
         import config
@@ -733,8 +609,8 @@ def main():
         SHEET_NAME = 'PR_Times_Data'
         SEARCH_KEYWORD = 'サプリ'
     
-    # スクレイパーの初期化
-    scraper = PRTimesCorrectedScraper(EMAIL, PASSWORD, CREDENTIALS_PATH)
+    # スクレイパーの初期化（ヘッドレスモードを指定）
+    scraper = PRTimesCorrectedScraper(EMAIL, PASSWORD, CREDENTIALS_PATH, headless=headless)
     
     # ログイン試行
     if not scraper.login():
@@ -799,8 +675,8 @@ def test_extract_info():
         'https://prtimes.jp/main/html/rd/p/000000156.000061950.html'
     ]
     
-    # ダミー認証情報でスクレイパーを初期化
-    scraper = PRTimesCorrectedScraper('test@example.com', 'test_password', 'dummy_credentials.json')
+    # ダミー認証情報でスクレイパーを初期化（テストモードは非ヘッドレス）
+    scraper = PRTimesCorrectedScraper('test@example.com', 'test_password', 'dummy_credentials.json', headless=False)
     
     print("=== extract_info() 動作検証 ===")
     results = []
@@ -823,8 +699,8 @@ def test_extract_info():
         print(f"\n=== DataFrame作成完了: {len(df)}件 ===")
         
         # Google Sheetsに書き込み（テスト用）
-        SPREADSHEET_ID_TEST = "1ABCdefGHiJKlmNOPqrsTUvwxyz12345"  # テスト用スプレッドシートID
-        SHEET_NAME_TEST = "TestSheet"
+        SPREADSHEET_ID_TEST = "1FPODrP-8DBUijUJXaZCu01FYNqVOIkJK_ss7ZokxDno"  # テスト用スプレッドシートID
+        SHEET_NAME_TEST = "prtimes_sc2"
         
         print("Google Sheetsへの書き込みを実行中...")
         write_to_google_sheets(df, SPREADSHEET_ID_TEST, SHEET_NAME_TEST)
@@ -838,4 +714,5 @@ if __name__ == '__main__':
         logging.getLogger().setLevel(logging.DEBUG)
         test_extract_info()
     else:
-        main()
+        # 通常実行時はヘッドレスモード
+        main(headless=True)
