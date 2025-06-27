@@ -11,6 +11,7 @@ import logging
 from typing import List, Dict, Optional
 import csv
 import urllib.parse
+import pandas as pd
 
 # ログ設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,8 +51,12 @@ class PRTimesCorrectedScraper:
         """
         logger.info("ログインURLを探索中...")
         
-        # 複数のパターンでログインURLを探す
+        # 複数のパターンでログインURLを探す（2025年6月更新版）
         potential_urls = [
+            'https://prtimes.jp/main/html/medialogin',  # メディアユーザー向けログイン（優先）
+            'https://prtimes.jp/auth/login',  # 企業ユーザー向けログイン（2025年現在）
+            'https://prtimes.jp/main/html/sociallogin',  # 個人ユーザー向けログイン
+            # 以下は旧URLパターン（互換性のため残す）
             'https://media.prtimes.jp/login',
             'https://account.prtimes.jp/login',
             'https://login.prtimes.jp/',
@@ -63,19 +68,39 @@ class PRTimesCorrectedScraper:
         
         for url in potential_urls:
             try:
+                logger.debug(f"ログインURL候補をチェック中: {url}")
                 response = self.session.get(url, timeout=10)
+                logger.debug(f"  ステータスコード: {response.status_code}")
+                
                 if response.status_code == 200:
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
                     # ログインフォームがあるかチェック
                     forms = soup.find_all('form')
-                    for form in forms:
-                        has_email = form.find('input', {'type': 'email'}) or form.find('input', {'name': re.compile('email', re.I)})
+                    logger.debug(f"  検出されたフォーム数: {len(forms)}")
+                    
+                    for i, form in enumerate(forms):
+                        # より柔軟な入力フィールド検出
+                        has_email = (form.find('input', {'type': 'email'}) or 
+                                   form.find('input', {'name': re.compile('email', re.I)}) or
+                                   form.find('input', {'name': re.compile('mail', re.I)}) or
+                                   form.find('input', {'placeholder': re.compile('メール|email', re.I)}))
                         has_password = form.find('input', {'type': 'password'})
                         
-                        if has_email and has_password:
+                        # ユーザー名フィールドもチェック
+                        has_username = (form.find('input', {'name': re.compile('user', re.I)}) or
+                                      form.find('input', {'name': re.compile('login', re.I)}) or
+                                      form.find('input', {'placeholder': re.compile('ユーザー|ID', re.I)}))
+                        
+                        logger.debug(f"  フォーム{i+1}: email={bool(has_email)}, password={bool(has_password)}, username={bool(has_username)}")
+                        
+                        # ログインフォームの条件を緩和
+                        if has_password and (has_email or has_username):
                             logger.info(f"ログインフォームが見つかりました: {url}")
+                            logger.debug(f"  フォームのaction属性: {form.get('action', 'なし')}")
                             return url
+                else:
+                    logger.debug(f"  アクセス失敗: HTTP {response.status_code}")
                             
             except Exception as e:
                 logger.debug(f"URL {url} のチェック中にエラー: {e}")
@@ -83,29 +108,47 @@ class PRTimesCorrectedScraper:
         
         # トップページからログインリンクを探す
         try:
+            logger.debug("トップページからログインリンクを探索中...")
             response = self.session.get('https://prtimes.jp/')
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # ログインリンクを探す
-            login_links = soup.find_all('a', string=re.compile(r'ログイン|login', re.I))
-            for link in login_links:
-                href = link.get('href', '')
-                if href:
-                    if href.startswith('/'):
-                        href = f'https://prtimes.jp{href}'
-                    elif not href.startswith('http'):
-                        href = f'https://prtimes.jp/{href}'
-                    
-                    # このリンクをチェック
-                    try:
-                        test_response = self.session.get(href, timeout=10)
-                        if test_response.status_code == 200:
-                            test_soup = BeautifulSoup(test_response.text, 'html.parser')
-                            if test_soup.find('input', {'type': 'password'}):
-                                logger.info(f"ログインフォームが見つかりました: {href}")
-                                return href
-                    except:
-                        continue
+            # より詳細なログインリンクパターンを探す
+            login_patterns = [
+                r'ログイン|login',  # 一般的なログイン
+                r'企業.*ログイン|corporate.*login',  # 企業ログイン
+                r'メディア.*ログイン|media.*login',  # メディアログイン
+                r'会員.*ログイン|member.*login',  # 会員ログイン
+                r'配信.*ログイン|distribution.*login'  # 配信ログイン
+            ]
+            
+            found_links = []
+            for pattern in login_patterns:
+                login_links = soup.find_all('a', string=re.compile(pattern, re.I))
+                for link in login_links:
+                    href = link.get('href', '')
+                    link_text = link.get_text(strip=True)
+                    if href:
+                        if href.startswith('/'):
+                            href = f'https://prtimes.jp{href}'
+                        elif not href.startswith('http'):
+                            href = f'https://prtimes.jp/{href}'
+                        
+                        found_links.append((href, link_text))
+                        logger.debug(f"  発見されたリンク: '{link_text}' -> {href}")
+            
+            # 発見されたリンクをチェック
+            for href, link_text in found_links:
+                try:
+                    logger.debug(f"リンクをチェック中: {href}")
+                    test_response = self.session.get(href, timeout=10)
+                    if test_response.status_code == 200:
+                        test_soup = BeautifulSoup(test_response.text, 'html.parser')
+                        if test_soup.find('input', {'type': 'password'}):
+                            logger.info(f"ログインフォームが見つかりました: {href} ('{link_text}')")
+                            return href
+                except Exception as link_error:
+                    logger.debug(f"  リンクチェック中にエラー: {link_error}")
+                    continue
                         
         except Exception as e:
             logger.debug(f"トップページの探索中にエラー: {e}")
@@ -185,8 +228,11 @@ class PRTimesCorrectedScraper:
             forms = soup.find_all('form')
             
             for form in forms:
-                has_email = form.find('input', {'type': 'email'}) or form.find('input', {'name': re.compile('email', re.I)})
-                has_password = form.find('input', {'type': 'password'})
+                # メディアログインの場合は 'mail' フィールドを探す
+                has_email = (form.find('input', {'type': 'email'}) or 
+                           form.find('input', {'name': re.compile('email|mail', re.I)}) or
+                           form.find('input', {'type': 'text', 'name': re.compile('mail', re.I)}))
+                has_password = form.find('input', {'type': 'password'}) or form.find('input', {'name': 'pass'})
                 
                 if has_email and has_password:
                     login_form = form
@@ -212,10 +258,17 @@ class PRTimesCorrectedScraper:
                 action_url = login_url
             
             # 6. ログインデータを準備
-            login_data = {
-                'email': self.email,
-                'password': self.password
-            }
+            # メディアユーザーログインの場合、フィールド名が異なる
+            if 'medialogin' in login_url:
+                login_data = {
+                    'mail': self.email,  # メディアログインは 'mail' フィールド
+                    'pass': self.password  # メディアログインは 'pass' フィールド
+                }
+            else:
+                login_data = {
+                    'email': self.email,
+                    'password': self.password
+                }
             
             # CSRFトークンを追加
             login_data.update(csrf_data)
@@ -376,11 +429,14 @@ class PRTimesCorrectedScraper:
         }
         
         try:
+            # デバッグログ: 処理対象URL
+            logger.debug(f"処理対象URL: {article_url}")
+            
             response = self.session.get(article_url)  # セッション維持
             response.encoding = 'utf-8'
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 会社名の抽出
+            # 会社名の抽出（既存ロジックを維持）
             company_elem = soup.find('div', {'class': 'release-company'})
             if not company_elem:
                 company_elem = soup.find('a', {'class': 'link-to-company'})
@@ -390,55 +446,208 @@ class PRTimesCorrectedScraper:
             if company_elem:
                 info['会社名'] = company_elem.text.strip()
             
-            # お問い合わせ情報の抽出
-            full_text = response.text
-            
-            # 担当者名の抽出
-            name_patterns = [
-                r'(?:担当|広報)[\s:：]*([一-龥ぁ-んァ-ヶー]{2,5}[\s　]*[一-龥ぁ-んァ-ヶー]{2,5})',
-                r'([一-龥]{1,4}[\s　]+[一-龥]{1,4})[\s　]*(?:まで|宛)',
-                r'(?:氏名|お名前)[\s:：]*([一-龥ぁ-んァ-ヶー\s　]{2,10})'
+            # 記事本文エリアを特定（フッター・ヘッダーを除外）
+            main_content = None
+            content_selectors = [
+                'main', 'article', '.content', '.main-content', 
+                '.article-content', '.release-content', '.press-release'
             ]
             
-            for pattern in name_patterns:
-                matches = re.findall(pattern, full_text)
-                if matches:
-                    for match in matches:
-                        name = match.strip()
-                        if len(name) >= 2 and len(name) <= 10 and '会社' not in name and '株式' not in name:
-                            info['担当者名'] = name
-                            break
-                    if info['担当者名']:
+            for selector in content_selectors:
+                main_content = soup.select_one(selector)
+                if main_content:
+                    logger.debug(f"記事本文エリア特定: {selector}")
+                    break
+            
+            # 本文エリアが見つからない場合は、フッター・ヘッダーを除外したbody
+            if not main_content:
+                main_content = soup.find('body')
+                if main_content:
+                    # フッター・ヘッダーを除外
+                    for exclude_tag in main_content.find_all(['header', 'footer', 'nav']):
+                        exclude_tag.decompose()
+                    # PR TIMESの共通要素を除外
+                    for exclude_class in main_content.find_all(class_=re.compile(r'header|footer|nav|menu|sidebar')):
+                        exclude_class.decompose()
+                    logger.debug("記事本文エリア: body（フッター・ヘッダー除外後）")
+            
+            # メディア関係者限定セクションを優先的に探す（本文エリア内で）
+            section = None
+            media_keywords = [
+                'メディア関係者限定', '本件に関するお問い合わせ', 'プレスリリースに関するお問い合わせ',
+                '報道関係者お問い合わせ先', '広報担当', 'PR担当', '取材依頼', '問い合わせ先'
+            ]
+            
+            search_area = main_content if main_content else soup
+            
+            for keyword in media_keywords:
+                # キーワードを含む要素を探す（本文エリア内で）
+                elements = search_area.find_all(string=re.compile(keyword))
+                for element in elements:
+                    if element.parent:
+                        # 親要素を遡って適切なセクションを見つける
+                        parent = element.parent
+                        while parent and parent.name not in ['div', 'section', 'p', 'td']:
+                            parent = parent.parent
+                        if parent:
+                            # PR TIMESの共通フッターでないことを確認
+                            parent_text = parent.get_text(strip=True)
+                            if not ('Copyright' in parent_text and 'PR TIMES' in parent_text):
+                                section = parent
+                                logger.debug(f"対象セクション発見: {keyword}")
+                                break
+                if section:
+                    break
+            
+            # デバッグログ: 抽出対象セクションのHTML
+            if section:
+                section_html = str(section)[:500]  # 最初の500文字
+                logger.debug(f"対象セクションHTML: {section_html}...")
+            else:
+                logger.debug("対象セクションが見つからず、全文を使用")
+            
+            # セクションが見つかった場合はその範囲内のテキストを使用
+            if section:
+                text = section.get_text(separator=' ', strip=True)
+            else:
+                # フォールバック1: 記事本文エリアから抽出
+                if main_content:
+                    text = main_content.get_text(separator=' ', strip=True)
+                    logger.debug("フォールバック1: 記事本文エリア全体を使用")
+                else:
+                    # フォールバック2: 全文テキストを使用（最後の手段）
+                    text = soup.get_text(separator=' ', strip=True)
+                    logger.debug("フォールバック2: 全文テキストを使用")
+            
+            # デバッグログ: 抜き出したテキストの詳細情報
+            logger.debug(f"抽出対象テキスト（冒頭100文字）: {text[:100]}")
+            logger.debug(f"抽出対象テキスト長: {len(text)}文字")
+            
+            # 主要キーワードの有無をチェック
+            keywords_check = {
+                'お問い合わせ': 'お問い合わせ' in text,
+                '担当': '担当' in text,
+                'TEL': 'TEL' in text or '電話' in text,
+                '@': '@' in text
+            }
+            logger.debug(f"キーワード存在チェック: {keywords_check}")
+            
+            # ピンポイント正規表現による抽出
+            
+            # 会社名の抽出（HTML要素から取得できなかった場合）
+            if not info['会社名']:
+                company_match = re.search(r'(株式会社[^\s、。；;]{1,30})', text)
+                if company_match:
+                    info['会社名'] = company_match.group(1)
+                    logger.debug(f"会社名をテキストから抽出: {info['会社名']}")
+            
+            # 担当者名の抽出（複数パターン）
+            person_patterns = [
+                r'(?:担当者?[:：]\s*)([一-龥]{2,10})',
+                r'(?:広報担当[:：]\s*)([一-龥]{2,10})',
+                r'(?:PR担当[:：]\s*)([一-龥]{2,10})',
+                r'([一-龥]{2,4}\s+[一-龥]{2,4})(?:\s*(?:まで|宛|様|氏))',
+                r'(?:連絡先[:：]\s*)([一-龥]{2,10})',
+                r'(?:問い合わせ先[:：]\s*)([一-龥]{2,10})'
+            ]
+            
+            for pattern in person_patterns:
+                person_match = re.search(pattern, text)
+                if person_match:
+                    candidate = person_match.group(1).strip()
+                    # 無効な候補を除外
+                    if (candidate and len(candidate) >= 2 and len(candidate) <= 10 and
+                        '会社' not in candidate and '株式' not in candidate and
+                        '法人' not in candidate and '企業' not in candidate):
+                        info['担当者名'] = candidate
+                        logger.debug(f"担当者名を抽出: {info['担当者名']} (パターン: {pattern})")
                         break
             
-            # メールアドレスの抽出
-            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-            email_matches = re.findall(email_pattern, full_text)
-            if email_matches:
+            # メールアドレスの抽出（複数パターン）
+            email_patterns = [
+                r'([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})',
+                r'(?:E-?mail[:：]\s*)?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})',
+                r'(?:メール[:：]\s*)?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})'
+            ]
+            
+            for pattern in email_patterns:
+                email_matches = re.findall(pattern, text)
                 for email in email_matches:
-                    if 'prtimes' not in email.lower():
+                    if ('prtimes' not in email.lower() and 'example' not in email.lower() and
+                        'test' not in email.lower()):
                         info['メールアドレス'] = email
+                        logger.debug(f"メールアドレスを抽出: {info['メールアドレス']}")
                         break
+                if info['メールアドレス']:
+                    break
             
-            # 電話番号の抽出
+            # 電話番号の抽出（複数パターン）
             phone_patterns = [
-                r'(?:TEL|Tel|tel|電話|℡)[\s:：]*([0-9０-９\-－\s\(\)]{10,20})',
-                r'(0[0-9]{1,4}[\-－\s]?[0-9]{1,4}[\-－\s]?[0-9]{3,4})',
-                r'(０[０-９]{1,4}[\-－\s]?[０-９]{1,4}[\-－\s]?[０-９]{3,4})'
+                r'(?:TEL|Tel|tel|電話|℡)[:：\s]*([0-9０-９\-－\(\)\s]{10,20})',
+                r'(0\d{1,4}[-－]\d{1,4}[-－]\d{3,4})',
+                r'(０[\d０-９]{1,4}[－-][\d０-９]{1,4}[－-][\d０-９]{3,4})',
+                r'(\d{2,4}[-－]\d{2,4}[-－]\d{4})',
+                r'(\d{10,11})'  # ハイフンなしの電話番号
             ]
             
             for pattern in phone_patterns:
-                phone_matches = re.findall(pattern, full_text)
-                if phone_matches:
-                    phone = phone_matches[0]
-                    if isinstance(phone, tuple):
-                        phone = phone[0]
-                    trans_table = str.maketrans('０１２３４５６７８９－（）　', '0123456789-() ')
-                    phone = phone.translate(trans_table).strip()
-                    phone = re.sub(r'\s+', '', phone)
-                    if len(phone) >= 10:
-                        info['電話番号'] = phone
+                phone_matches = re.findall(pattern, text)
+                for phone in phone_matches:
+                    # 全角を半角に変換
+                    phone_clean = phone.translate(str.maketrans('０１２３４５６７８９－（）　', '0123456789-() '))
+                    phone_clean = re.sub(r'[\s\(\)]', '', phone_clean)
+                    
+                    # 電話番号として妥当かチェック
+                    if (len(phone_clean) >= 10 and len(phone_clean) <= 15 and
+                        phone_clean.startswith('0') and phone_clean.replace('-', '').isdigit()):
+                        # ハイフンがない場合は追加
+                        if '-' not in phone_clean and len(phone_clean) == 10:
+                            phone_clean = phone_clean[:3] + '-' + phone_clean[3:6] + '-' + phone_clean[6:]
+                        elif '-' not in phone_clean and len(phone_clean) == 11:
+                            phone_clean = phone_clean[:3] + '-' + phone_clean[3:7] + '-' + phone_clean[7:]
+                        
+                        info['電話番号'] = phone_clean
+                        logger.debug(f"電話番号を抽出: {info['電話番号']} (パターン: {pattern})")
                         break
+                if info['電話番号']:
+                    break
+            
+            # 抽出結果が不十分な場合の追加処理
+            if not info['メールアドレス'] and not info['電話番号'] and not info['担当者名']:
+                logger.debug("セクション抽出で結果が得られなかったため、全文検索を実行")
+                full_text = soup.get_text(separator=' ', strip=True)
+                
+                # 全文からメールアドレスを再検索
+                if not info['メールアドレス']:
+                    email_match = re.search(r'([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})', full_text)
+                    if email_match:
+                        email = email_match.group(1)
+                        if 'prtimes' not in email.lower():
+                            info['メールアドレス'] = email
+                            logger.debug(f"全文検索でメールアドレスを抽出: {info['メールアドレス']}")
+                
+                # 全文から電話番号を再検索
+                if not info['電話番号']:
+                    phone_match = re.search(r'(?:TEL|Tel|tel|電話)[:：\s]*([0-9０-９\-－\(\)\s]{10,20})', full_text)
+                    if phone_match:
+                        phone = phone_match.group(1)
+                        phone_clean = phone.translate(str.maketrans('０１２３４５６７８９－（）　', '0123456789-() '))
+                        phone_clean = re.sub(r'[\s\(\)]', '', phone_clean)
+                        if len(phone_clean) >= 10:
+                            info['電話番号'] = phone_clean
+                            logger.debug(f"全文検索で電話番号を抽出: {info['電話番号']}")
+            
+            # 抽出結果のサマリー
+            extraction_summary = {
+                '会社名': bool(info['会社名']),
+                '担当者名': bool(info['担当者名']),
+                'メールアドレス': bool(info['メールアドレス']),
+                '電話番号': bool(info['電話番号'])
+            }
+            logger.debug(f"抽出結果サマリー: {extraction_summary}")
+            
+            if not any(extraction_summary.values()):
+                logger.warning(f"連絡先情報が一切抽出できませんでした: {article_url}")
             
             logger.info(f"記事から情報を抽出: {article_url}")
             
@@ -447,46 +656,64 @@ class PRTimesCorrectedScraper:
         
         return info
     
-    def write_to_sheets(self, data: List[Dict[str, str]], spreadsheet_id: str, sheet_name: str):
-        """
-        Google Sheetsにデータを書き込む
+
+def write_to_google_sheets(dataframe: pd.DataFrame, spreadsheet_id: str, sheet_name: str):
+    """
+    DataFrameをGoogle Sheetsに書き込む
+    
+    Args:
+        dataframe: 書き込むpandas DataFrame
+        spreadsheet_id: Google SheetsのスプレッドシートID
+        sheet_name: シート名
+    """
+    try:
+        # Google Sheets認証
+        scope = ['https://spreadsheets.google.com/feeds',
+                 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_name(
+            'credentials.json', scope)
+        client = gspread.authorize(creds)
         
-        Args:
-            data: 書き込むデータのリスト
-            spreadsheet_id: スプレッドシートのID
-            sheet_name: シート名
-        """
+        # スプレッドシートを開く
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        
+        # シートを取得または作成
         try:
-            scope = ['https://spreadsheets.google.com/feeds',
-                     'https://www.googleapis.com/auth/drive']
-            creds = ServiceAccountCredentials.from_json_keyfile_name(
-                self.credentials_path, scope)
-            client = gspread.authorize(creds)
+            worksheet = spreadsheet.worksheet(sheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
+            logger.info(f"新しいシート '{sheet_name}' を作成しました")
+        
+        # シートの内容をクリア
+        worksheet.clear()
+        
+        if not dataframe.empty:
+            # ヘッダー（列名）を取得
+            headers = dataframe.columns.tolist()
             
-            spreadsheet = client.open_by_key(spreadsheet_id)
+            # データを取得（リスト形式に変換）
+            values = dataframe.values.tolist()
             
-            try:
-                worksheet = spreadsheet.worksheet(sheet_name)
-            except:
-                worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
+            # ヘッダーを書き込み
+            worksheet.update('A1', [headers])
             
-            worksheet.clear()
-            
-            if data:
-                header = list(data[0].keys())
-                values = []
-                for row in data:
-                    values.append([row.get(h, '') for h in header])
+            # データを書き込み
+            if values:
+                # データの範囲を計算
+                end_row = len(values) + 1
+                end_col = chr(ord('A') + len(headers) - 1)
+                range_name = f'A2:{end_col}{end_row}'
                 
-                worksheet.update('A1', [header])
-                
-                if values:
-                    worksheet.update(f'A2:E{len(values)+1}', values)
+                worksheet.update(range_name, values)
             
-            logger.info(f"Google Sheetsへの書き込みが完了しました: {len(data)}件")
+            logger.info(f"Google Sheetsに {len(dataframe)} 件のデータを書き込みました")
+        else:
+            logger.warning("DataFrameが空のため、ヘッダーのみ書き込みます")
             
-        except Exception as e:
-            logger.error(f"Google Sheetsへの書き込み中にエラーが発生しました: {e}")
+    except FileNotFoundError:
+        logger.error("credentials.json ファイルが見つかりません")
+    except Exception as e:
+        logger.error(f"Google Sheetsへの書き込み中にエラーが発生しました: {e}")
 
 def main():
     # 設定をconfig.pyから読み込む
@@ -541,16 +768,19 @@ def main():
         else:
             time.sleep(0.5)
     
-    # Google Sheetsに書き込み
-    scraper.write_to_sheets(results, SPREADSHEET_ID, SHEET_NAME)
-    
-    # ローカルにも保存
-    with open('prtimes_corrected_data.csv', 'w', newline='', encoding='utf-8-sig') as f:
-        if results:
-            fieldnames = list(results[0].keys())
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(results)
+    # DataFrameに変換
+    if results:
+        df = pd.DataFrame(results)
+        
+        # ローカルにも保存
+        df.to_csv('prtimes_corrected_data.csv', index=False, encoding='utf-8-sig')
+        
+        # Google Sheetsに書き込み
+        SPREADSHEET_ID_NEW = "1ABCdefGHiJKlmNOPqrsTUvwxyz12345"  # 実際のスプレッドシートIDに変更してください
+        SHEET_NAME_NEW = "Sheet1"
+        write_to_google_sheets(df, SPREADSHEET_ID_NEW, SHEET_NAME_NEW)
+    else:
+        logger.warning("結果が空のため、DataFrameの作成をスキップします")
     
     logger.info(f"\n処理が完了しました。")
     logger.info(f"収集した記事数: {len(results)}件")
@@ -560,5 +790,52 @@ def main():
     logger.info(f"メールアドレス取得数: {email_count}件")
     logger.info(f"電話番号取得数: {phone_count}件")
 
+def test_extract_info():
+    """動作検証用テスト関数"""
+    # テスト用記事URLリスト
+    test_urls = [
+        'https://prtimes.jp/main/html/rd/p/000001554.000006302.html',
+        'https://prtimes.jp/main/html/rd/p/000000520.000024045.html',
+        'https://prtimes.jp/main/html/rd/p/000000156.000061950.html'
+    ]
+    
+    # ダミー認証情報でスクレイパーを初期化
+    scraper = PRTimesCorrectedScraper('test@example.com', 'test_password', 'dummy_credentials.json')
+    
+    print("=== extract_info() 動作検証 ===")
+    results = []
+    
+    for i, url in enumerate(test_urls, 1):
+        print(f"\n[テスト {i}] {url}")
+        try:
+            info = scraper.extract_info(url)
+            print(f"  会社名: {info['会社名']}")
+            print(f"  担当者名: {info['担当者名']}")
+            print(f"  メールアドレス: {info['メールアドレス']}")
+            print(f"  電話番号: {info['電話番号']}")
+            results.append(info)
+        except Exception as e:
+            print(f"  エラー: {e}")
+    
+    # テストモードでもDataFrameがあれば書き込み
+    if results:
+        df = pd.DataFrame(results)
+        print(f"\n=== DataFrame作成完了: {len(df)}件 ===")
+        
+        # Google Sheetsに書き込み（テスト用）
+        SPREADSHEET_ID_TEST = "1ABCdefGHiJKlmNOPqrsTUvwxyz12345"  # テスト用スプレッドシートID
+        SHEET_NAME_TEST = "TestSheet"
+        
+        print("Google Sheetsへの書き込みを実行中...")
+        write_to_google_sheets(df, SPREADSHEET_ID_TEST, SHEET_NAME_TEST)
+
 if __name__ == '__main__':
-    main()
+    import sys
+    
+    # コマンドライン引数でテストモードを指定
+    if len(sys.argv) > 1 and sys.argv[1] == '--test':
+        # デバッグログレベルに設定
+        logging.getLogger().setLevel(logging.DEBUG)
+        test_extract_info()
+    else:
+        main()
