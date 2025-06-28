@@ -75,8 +75,16 @@ class PRTimesCorrectedScraper:
             chrome_options.add_argument('--window-size=1920,1080')
             chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # ChromeDriver 自動管理
-            service = Service(ChromeDriverManager().install())
+            # Chromiumのバイナリパスを明示的に指定
+            chrome_options.binary_location = '/snap/bin/chromium'
+            
+            # ChromeDriver 自動管理 - Chromium用の設定
+            from webdriver_manager.chrome import ChromeDriverManager
+            from webdriver_manager.core.driver_cache import DriverCacheManager
+            from webdriver_manager.core.os_manager import ChromeType
+            
+            # Chromium用のドライバーをインストール
+            service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
             driver = webdriver.Chrome(service=service, options=chrome_options)
             driver.implicitly_wait(10)
             
