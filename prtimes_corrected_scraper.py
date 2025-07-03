@@ -5,7 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 import time
 import logging
 from typing import List, Dict, Optional
@@ -552,10 +552,10 @@ def write_to_google_sheets(dataframe: pd.DataFrame, spreadsheet_id: str, sheet_n
     """
     try:
         # Google Sheets認証
-        scope = ['https://spreadsheets.google.com/feeds',
+        scope = ['https://www.googleapis.com/auth/spreadsheets',
                  'https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_name(
-            'credentials.json', scope)
+        creds = Credentials.from_service_account_file(
+            'credentials.json', scopes=scope)
         client = gspread.authorize(creds)
         
         # スプレッドシートを開く
@@ -599,7 +599,7 @@ def write_to_google_sheets(dataframe: pd.DataFrame, spreadsheet_id: str, sheet_n
     except Exception as e:
         logger.error(f"Google Sheetsへの書き込み中にエラーが発生しました: {e}")
 
-def main(headless=True):
+def main(headless=True, search_keyword=None):
     # 設定をconfig.pyから読み込む
     try:
         import config
@@ -608,14 +608,14 @@ def main(headless=True):
         CREDENTIALS_PATH = config.GOOGLE_CREDENTIALS_PATH
         SPREADSHEET_ID = config.SPREADSHEET_ID
         SHEET_NAME = config.SHEET_NAME
-        SEARCH_KEYWORD = config.DEFAULT_SEARCH_KEYWORD
+        SEARCH_KEYWORD = search_keyword or config.DEFAULT_SEARCH_KEYWORD
     except ImportError:
         EMAIL = 'your_email@example.com'
         PASSWORD = 'your_password'
         CREDENTIALS_PATH = '/mnt/c/Users/hyuga/Downloads/credentials.json'
         SPREADSHEET_ID = 'your_spreadsheet_id'
         SHEET_NAME = 'PR_Times_Data'
-        SEARCH_KEYWORD = 'サプリ'
+        SEARCH_KEYWORD = search_keyword or 'サプリ'
     
     # スクレイパーの初期化（ヘッドレスモードを指定）
     scraper = PRTimesCorrectedScraper(EMAIL, PASSWORD, CREDENTIALS_PATH, headless=headless)
@@ -672,58 +672,17 @@ def main(headless=True):
     logger.info(f"メールアドレス取得数: {email_count}件")
     logger.info(f"電話番号取得数: {phone_count}件")
 
-def test_extract_info():
-    """動作検証用テスト関数"""
-    # 設定をconfig.pyから読み込む
-    try:
-        import config
-        SPREADSHEET_ID_TEST = config.SPREADSHEET_ID
-        SHEET_NAME_TEST = config.SHEET_NAME
-    except ImportError:
-        SPREADSHEET_ID_TEST = "1FPODrP-8DBUijUJXaZCu01FYNqVOIkJK_ss7ZokxDno"
-        SHEET_NAME_TEST = "prtimes_sc2"
-    
-    # テスト用記事URLリスト
-    test_urls = [
-        'https://prtimes.jp/main/html/rd/p/000001554.000006302.html',
-        'https://prtimes.jp/main/html/rd/p/000000520.000024045.html',
-        'https://prtimes.jp/main/html/rd/p/000000156.000061950.html'
-    ]
-    
-    # ダミー認証情報でスクレイパーを初期化（テストモードは非ヘッドレス）
-    scraper = PRTimesCorrectedScraper('test@example.com', 'test_password', 'dummy_credentials.json', headless=False)
-    
-    print("=== extract_info() 動作検証 ===")
-    results = []
-    
-    for i, url in enumerate(test_urls, 1):
-        print(f"\n[テスト {i}] {url}")
-        try:
-            info = scraper.extract_info(url)
-            print(f"  会社名: {info['会社名']}")
-            print(f"  担当者名: {info['担当者名']}")
-            print(f"  メールアドレス: {info['メールアドレス']}")
-            print(f"  電話番号: {info['電話番号']}")
-            results.append(info)
-        except Exception as e:
-            print(f"  エラー: {e}")
-    
-    # テストモードでもDataFrameがあれば書き込み
-    if results:
-        df = pd.DataFrame(results)
-        print(f"\n=== DataFrame作成完了: {len(df)}件 ===")
-        
-        print("Google Sheetsへの書き込みを実行中...")
-        write_to_google_sheets(df, SPREADSHEET_ID_TEST, SHEET_NAME_TEST)
 
 if __name__ == '__main__':
-    import sys
+    import argparse
     
-    # コマンドライン引数でテストモードを指定
-    if len(sys.argv) > 1 and sys.argv[1] == '--test':
-        # デバッグログレベルに設定
-        logging.getLogger().setLevel(logging.DEBUG)
-        test_extract_info()
-    else:
-        # 通常実行時はヘッドレスモード
-        main(headless=True)
+    # コマンドライン引数の処理
+    parser = argparse.ArgumentParser(description='PR Times スクレイパー')
+    parser.add_argument('--keyword', '-k', type=str, help='検索キーワード（例: --keyword "美容"）')
+    parser.add_argument('--no-headless', action='store_true', help='ブラウザを表示して実行')
+    
+    args = parser.parse_args()
+    
+    # 実行
+    headless_mode = not args.no_headless
+    main(headless=headless_mode, search_keyword=args.keyword)
