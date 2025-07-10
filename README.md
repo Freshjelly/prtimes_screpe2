@@ -1,86 +1,122 @@
-# 📰 PR Times Google Sheets スクレイパー
+# PR Times Scraper
 
-PR Timesのプレスリリースから企業の連絡先情報を自動抽出し、Google Sheetsで管理できるWebスクレイパーです。
+PR Timesのプレスリリースから企業の連絡先情報を収集するスクレイパーです。
 
-## 🚀 機能
+## 機能
 
-- **Google Sheets連携**: シート上でキーワードを入力するだけでスクレイピング実行
-- **自動データ抽出**: 会社名、担当者名、メール、電話番号を自動抽出
-- **リアルタイム保存**: 結果を自動でGoogle Sheetsに保存
-- **キーワード検索**: 任意のキーワードで検索可能
+- PR Timesにログインして記事を検索
+- キーワードに基づいて記事URLを自動収集
+- 各記事から以下の情報を抽出：
+  - 会社名
+  - 担当者名
+  - メールアドレス
+  - 電話番号
+- 結果をExcelファイル（キーワード別シート）とCSVファイルに出力
+- Google Sheetsとの連携機能（オプション）
 
-## 📋 セットアップ
+## 必要な環境
 
-### 1. 依存関係のインストール
+- Python 3.7以上
+- Google Chrome/Chromium
+- ChromeDriver（自動インストール）
+
+## インストール
+
+1. リポジトリをクローン
+```bash
+git clone https://github.com/your-username/prtimes_scraper.git
+cd prtimes_scraper
+```
+
+2. 必要なパッケージをインストール
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. 設定ファイルの準備
+3. 設定ファイルを作成
 ```bash
-cp config.py.example config.py
-# config.pyを編集して認証情報を入力
+cp config.sample.py config.py
 ```
 
-### 3. Google認証ファイル
-`credentials.json`をプロジェクトルートに配置
+4. `config.py`を編集して認証情報を設定
 
-## 🎯 使用方法
+## 使用方法
 
-### Google Sheets連携モード（推奨）
-
-#### 1. システム起動
+### 単一キーワードで検索
 ```bash
-python start_monitor.py
-```
-
-#### 2. Google Sheetsで操作
-1. 表示されたURLでGoogle Sheetsを開く
-2. 'Control'シートを選択  
-3. **A4セル**にキーワードを入力（例：「美容」）
-4. **B4セル**に「実行」と入力
-5. 自動でスクレイピングが開始されます
-
-### コマンドライン実行モード
-
-```bash
-# 特定キーワードで検索
 python prtimes_corrected_scraper.py --keyword "美容"
-
-# ブラウザ表示で実行
-python prtimes_corrected_scraper.py --keyword "健康食品" --no-headless
-
-# デフォルト（サプリ）で検索
-python prtimes_corrected_scraper.py
 ```
 
-## 📊 出力データ
+### 複数キーワードで検索（config.pyのSEARCH_KEYWORDSを使用）
+```bash
+python prtimes_corrected_scraper.py --multiple
+```
 
-以下の情報が抽出されます：
-- 記事URL
-- 会社名  
-- 担当者名
-- メールアドレス
-- 電話番号
+### ブラウザを表示して実行（デバッグ用）
+```bash
+python prtimes_corrected_scraper.py --keyword "美容" --no-headless
+```
 
-結果は以下に保存されます：
-- **CSV**: `prtimes_corrected_data.csv`
-- **Google Sheets**: 設定したスプレッドシートに自動保存
+## 設定
 
-## ⚙️ 設定
+`config.py`で以下の設定が必要です：
 
-`config.py`で以下を設定：
-- PR Times ログイン情報
-- Google Sheets スプレッドシートID
-- 検索設定
+- `PRTIMES_EMAIL`: PR Timesのログインメールアドレス
+- `PRTIMES_PASSWORD`: PR Timesのログインパスワード
+- `GOOGLE_CREDENTIALS_PATH`: Google認証用JSONファイルのパス（オプション）
+- `SEARCH_KEYWORDS`: 複数キーワード検索時のキーワードリスト
+- `DEFAULT_SEARCH_KEYWORD`: デフォルトの検索キーワード
 
-## 🔄 システム構成
+### 設定例（config.py）
 
-- **prtimes_corrected_scraper.py**: メインスクレイパー
-- **sheets_monitor.py**: Google Sheets監視システム  
-- **setup_sheets.py**: Google Sheets初期設定
-- **start_monitor.py**: システム起動スクリプト
+```python
+# PR Timesのログイン情報
+PRTIMES_EMAIL = 'your_email@example.com'
+PRTIMES_PASSWORD = 'your_password'
 
-## 📞 サポート
+# Google認証情報（オプション）
+GOOGLE_CREDENTIALS_PATH = '/path/to/credentials.json'
+SPREADSHEET_ID = 'your_spreadsheet_id'
+SHEET_NAME = 'PR_Times_Data'
 
-問題が発生した場合は、ログを確認してください。Google Sheets上の'Control'シートでステータスも確認できます。
+# 検索キーワード
+DEFAULT_SEARCH_KEYWORD = 'サプリ'
+SEARCH_KEYWORDS = [
+    '匂い', '臭い', '体臭', '脱毛', '薄毛', '植毛', 'ハゲ', 
+    'ホワイトニング', '矯正', '痩身', 'アンチエイジング', '清潔', 
+    'メンズ美容', '若見え', '男性用化粧品', 'メンズコスメ', 'AGA'
+]
+```
+
+## 出力ファイル
+
+- **Excel**: `prtimes_all_keywords_YYYYMMDD_HHMMSS.xlsx` (キーワード別シート)
+- **CSV**: `prtimes_data_YYYYMMDD_HHMMSS.csv` (記事ごとにページ分割)
+
+## オプション
+
+- `--keyword`, `-k`: 単一キーワード指定
+- `--multiple`, `-m`: 複数キーワードモード
+- `--no-headless`: ブラウザ表示モード
+- `--help`, `-h`: ヘルプ表示
+
+## 注意事項
+
+- PR Timesの利用規約を遵守してください
+- 過度なアクセスを避けるため、適切な待機時間を設定しています
+- ログイン情報は安全に管理してください
+- Google認証情報ファイル（credentials.json）は絶対にリポジトリにコミットしないでください
+
+## トラブルシューティング
+
+### ChromeDriverエラー
+- Chromiumがインストールされていることを確認
+- WSL環境の場合は `sudo snap install chromium` でインストール
+
+### ログインエラー
+- PR Timesのログイン情報が正しいか確認
+- `--no-headless`オプションでブラウザの動作を確認
+
+## ライセンス
+
+MIT License

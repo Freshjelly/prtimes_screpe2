@@ -89,8 +89,14 @@ config.py
 # Logs
 *.log
 login_response.html
+scraping_log*.txt
 
 # Temporary files
 *.tmp
 *.bak
 .~lock.*
+
+# Screenshots
+*.png
+*.jpg
+*.jpeg
